@@ -14,13 +14,14 @@ import {
   Filter,
   Trash,
   Search,
-  Clock
+  Clock,
+  ListFilter
 } from 'lucide-react';
-import { parseExcel, findMajorityMonth, cleanRosterData, updateNames, exportToExcel } from './services/excelService';
+import { parseExcel, findMajorityMonth, cleanRosterData, updateNames, exportToExcel, exportCombinedSummary } from './services/excelService';
 import { RosterSheet } from './types';
 
 const App: React.FC = () => {
-  const [rosterFile, setRosterFile] = useState<File | null>(null);
+  const [rosterFiles, setRosterFiles] = useState<File[]>([]);
   const [staffFile, setStaffFile] = useState<File | null>(null);
   const [processing, setProcessing] = useState(false);
   const [step, setStep] = useState<'upload' | 'verify' | 'complete'>('upload');
@@ -31,9 +32,14 @@ const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState(0);
 
   const handleRosterUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      setRosterFile(e.target.files[0]);
+    if (e.target.files) {
+      const newFiles = Array.from(e.target.files);
+      setRosterFiles(prev => [...prev, ...newFiles]);
     }
+  };
+
+  const removeRosterFile = (index: number) => {
+    setRosterFiles(prev => prev.filter((_, i) => i !== index));
   };
 
   const handleStaffUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -43,12 +49,18 @@ const App: React.FC = () => {
   };
 
   const startProcessing = async () => {
-    if (!rosterFile || !staffFile) return;
+    if (rosterFiles.length === 0 || !staffFile) return;
 
     setProcessing(true);
     try {
-      const rosterSheets = await parseExcel(rosterFile);
-      if (rosterSheets.length === 0) {
+      const allRosterSheets: RosterSheet[] = [];
+      
+      for (const file of rosterFiles) {
+        const sheets = await parseExcel(file);
+        allRosterSheets.push(...sheets);
+      }
+
+      if (allRosterSheets.length === 0) {
         alert("No valid tabs found! Please ensure tabs are named in yyyymmdd format.");
         setProcessing(false);
         return;
@@ -57,7 +69,7 @@ const App: React.FC = () => {
       const staffSheets = await parseExcel(staffFile);
       const staffData = staffSheets[0]?.data || [];
 
-      const month = findMajorityMonth(rosterSheets);
+      const month = findMajorityMonth(allRosterSheets);
       if (!month) {
         alert("Could not identify dates in Column C.");
         setProcessing(false);
@@ -66,7 +78,7 @@ const App: React.FC = () => {
       setMajorityMonth(month);
 
       // Clean: Majority Month, Truncate A-H, Truncate Row 72, Remove Empty Tabs
-      const cleaned = cleanRosterData(rosterSheets, month);
+      const cleaned = cleanRosterData(allRosterSheets, month);
       
       if (cleaned.length === 0) {
         alert("No matching data found. All tabs were empty after filtering.");
@@ -94,13 +106,18 @@ const App: React.FC = () => {
     setCleanedRoster(updated);
   };
 
-  const handleExport = () => {
+  const handleExportStandard = () => {
     exportToExcel(cleanedRoster, `Processed_Roster_${majorityMonth}.xlsx`);
     setStep('complete');
   };
 
+  const handleExportSummary = () => {
+    exportCombinedSummary(cleanedRoster, `Roster_Summary_${majorityMonth}.xlsx`);
+    setStep('complete');
+  };
+
   const reset = () => {
-    setRosterFile(null);
+    setRosterFiles([]);
     setStaffFile(null);
     setStep('upload');
     setCleanedRoster([]);
@@ -139,18 +156,39 @@ const App: React.FC = () => {
                   <TableIcon className="w-6 h-6 text-indigo-600" />
                 </div>
                 <div>
-                  <h2 className="text-xl font-bold text-slate-800">1. Upload Roster</h2>
-                  <p className="text-sm text-slate-500">yyyymmdd tabs. Column C used for month filter.</p>
+                  <h2 className="text-xl font-bold text-slate-800">1. Upload Rosters</h2>
+                  <p className="text-sm text-slate-500">yyyymmdd tabs. Multiple files allowed.</p>
                 </div>
               </div>
               
-              <label className={`flex-1 flex flex-col items-center justify-center border-2 border-dashed rounded-xl cursor-pointer transition-all ${rosterFile ? 'border-indigo-400 bg-indigo-50/30' : 'border-slate-200 hover:border-indigo-400 hover:bg-slate-50'}`}>
-                <div className="flex flex-col items-center justify-center py-10 px-4">
-                  <FileUp className={`w-12 h-12 mb-4 ${rosterFile ? 'text-indigo-600' : 'text-slate-400'}`} />
-                  {rosterFile ? <span className="text-indigo-700 font-medium text-center">{rosterFile.name}</span> : <span className="text-slate-500">Upload Roster (Excel)</span>}
-                </div>
-                <input type="file" className="hidden" accept=".xlsx, .xls" onChange={handleRosterUpload} />
-              </label>
+              <div className="flex-1 flex flex-col gap-4">
+                <label className={`flex flex-col items-center justify-center border-2 border-dashed rounded-xl cursor-pointer transition-all p-6 ${rosterFiles.length > 0 ? 'border-indigo-400 bg-indigo-50/30' : 'border-slate-200 hover:border-indigo-400 hover:bg-slate-50'}`}>
+                  <div className="flex flex-col items-center justify-center">
+                    <FileUp className={`w-10 h-10 mb-2 ${rosterFiles.length > 0 ? 'text-indigo-600' : 'text-slate-400'}`} />
+                    <span className="text-slate-500 text-sm font-medium">Add Roster Files</span>
+                  </div>
+                  <input type="file" className="hidden" accept=".xlsx, .xls" multiple onChange={handleRosterUpload} />
+                </label>
+
+                {rosterFiles.length > 0 && (
+                  <div className="space-y-2 max-h-48 overflow-y-auto pr-2">
+                    {rosterFiles.map((file, idx) => (
+                      <div key={idx} className="flex items-center justify-between bg-slate-50 p-2 rounded-lg border border-slate-100 group">
+                        <div className="flex items-center gap-2 overflow-hidden">
+                          <TableIcon className="w-4 h-4 text-indigo-400 shrink-0" />
+                          <span className="text-xs font-medium text-slate-700 truncate">{file.name}</span>
+                        </div>
+                        <button 
+                          onClick={() => removeRosterFile(idx)}
+                          className="p-1 text-slate-400 hover:text-red-500 transition-colors"
+                        >
+                          <Trash className="w-4 h-4" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
 
             <div className="bg-white rounded-2xl shadow-xl p-8 border border-slate-100 flex flex-col h-full">
@@ -176,8 +214,8 @@ const App: React.FC = () => {
             <div className="md:col-span-2 flex justify-center mt-4">
               <button
                 onClick={startProcessing}
-                disabled={!rosterFile || !staffFile || processing}
-                className={`flex items-center gap-2 px-10 py-4 rounded-full font-bold text-lg transition-all ${(!rosterFile || !staffFile || processing) ? 'bg-slate-200 text-slate-400' : 'bg-indigo-600 text-white shadow-lg hover:scale-105'}`}
+                disabled={rosterFiles.length === 0 || !staffFile || processing}
+                className={`flex items-center gap-2 px-10 py-4 rounded-full font-bold text-lg transition-all ${(rosterFiles.length === 0 || !staffFile || processing) ? 'bg-slate-200 text-slate-400' : 'bg-indigo-600 text-white shadow-lg hover:scale-105'}`}
               >
                 {processing ? <Loader2 className="w-6 h-6 animate-spin" /> : <>Clean & Match Names <ArrowRight className="w-6 h-6" /></>}
               </button>
@@ -192,16 +230,19 @@ const App: React.FC = () => {
                 <h2 className="text-2xl font-bold">Human Verification</h2>
                 <div className="flex flex-wrap items-center gap-4 mt-1 text-slate-400 text-sm">
                   <div className="flex items-center gap-1"><Calendar className="w-4 h-4" />Majority: {majorityMonth}</div>
-                  <div className="flex items-center gap-1"><Search className="w-4 h-4" />Short names expanded to Full Names</div>
-                  <div className="flex items-center gap-1"><Clock className="w-4 h-4" />Dates will export as numbers</div>
+                  <div className="flex items-center gap-1"><Search className="w-4 h-4" />Names Expanded</div>
+                  <div className="flex items-center gap-1"><Clock className="w-4 h-4" />Numeric Dates</div>
                 </div>
               </div>
-              <div className="flex gap-3">
-                <button onClick={reset} className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-lg flex items-center gap-2">
+              <div className="flex flex-wrap gap-3">
+                <button onClick={reset} className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-lg flex items-center gap-2 transition-colors">
                   <Trash2 className="w-4 h-4" /> Reset
                 </button>
-                <button onClick={handleExport} className="px-6 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg font-bold flex items-center gap-2">
-                  <Download className="w-5 h-5" /> Export
+                <button onClick={handleExportStandard} className="px-5 py-2 bg-indigo-500 hover:bg-indigo-600 text-white rounded-lg font-bold flex items-center gap-2 transition-all hover:scale-105">
+                  <Download className="w-5 h-5" /> Export Tabs
+                </button>
+                <button onClick={handleExportSummary} className="px-5 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg font-bold flex items-center gap-2 transition-all hover:scale-105">
+                  <ListFilter className="w-5 h-5" /> Export Summary (C-G)
                 </button>
               </div>
             </div>
@@ -222,8 +263,8 @@ const App: React.FC = () => {
               <table className="w-full border-collapse">
                 <thead className="sticky top-0 bg-slate-100 z-10 shadow-sm">
                   <tr>
-                    {['A', 'B', 'Date (Numeric)', 'D', 'E', 'Full Name (F)', 'G', 'H'].map((col) => (
-                      <th key={col} className={`px-4 py-3 text-xs font-bold uppercase tracking-wider border-b ${col.includes('F') ? 'text-indigo-600 bg-indigo-50' : 'text-slate-400'}`}>{col}</th>
+                    {['A', 'B', 'Date (Numeric)', 'RAW in', 'RAW out', 'Full Name (F)', 'Change (G)', 'H'].map((col) => (
+                      <th key={col} className={`px-4 py-3 text-xs font-bold uppercase tracking-wider border-b ${col.includes('F') || col.includes('Date') || col.includes('RAW') || col.includes('Change') ? 'text-indigo-600 bg-indigo-50' : 'text-slate-400'}`}>{col}</th>
                     ))}
                   </tr>
                 </thead>
@@ -231,7 +272,7 @@ const App: React.FC = () => {
                   {cleanedRoster[activeTab]?.data.map((row, rIdx) => (
                     <tr key={rIdx} className="hover:bg-slate-50">
                       {row.map((cell, cIdx) => (
-                        <td key={cIdx} className={`p-0 border-r last:border-0 ${cIdx === 5 ? 'bg-indigo-50/20' : ''}`}>
+                        <td key={cIdx} className={`p-0 border-r last:border-0 ${cIdx >= 2 && cIdx <= 6 ? 'bg-indigo-50/10' : ''}`}>
                           <input
                             type="text"
                             value={formatCellValue(cell)}

@@ -29,6 +29,30 @@ const parseYMD = (val: any): Date | null => {
 };
 
 /**
+ * Converts numeric time representations (like 930 or 1800) into 24h hh:mm format.
+ * Example: 930 -> 09:30, 1800 -> 18:00
+ */
+const formatTimeValue = (val: any): string => {
+  if (val === null || val === undefined) return "";
+  let s = String(val).trim().replace(":", "");
+  if (!s || isNaN(Number(s))) return String(val); // Return as-is if not numeric
+  
+  // Pad to 4 digits if needed (e.g., 930 -> 0930)
+  while (s.length < 4) {
+    s = "0" + s;
+  }
+  
+  // Only handle 4 digit time strings for safety
+  if (s.length === 4) {
+    const hh = s.substring(0, 2);
+    const mm = s.substring(2, 4);
+    return `${hh}:${mm}`;
+  }
+  
+  return s;
+};
+
+/**
  * Parses an Excel or CSV file into a collection of sheets with raw data.
  * Filters for tabs named strictly in yyyymmdd format for rosters.
  */
@@ -208,7 +232,6 @@ export const exportToExcel = (sheets: RosterSheet[], fileName: string) => {
       if (rIdx === 0) return row;
       const newRow = [...row];
       if (newRow[2]) {
-        // Force re-parsing to ensure manual UI edits are also converted correctly
         const d = parseYMD(newRow[2]);
         if (d) {
           newRow[2] = d;
@@ -224,7 +247,6 @@ export const exportToExcel = (sheets: RosterSheet[], fileName: string) => {
       for (let r = range.s.r + 1; r <= range.e.r; ++r) {
         const cellRef = XLSX.utils.encode_cell({ r, c: 2 });
         if (ws[cellRef] && ws[cellRef].t === 'd') {
-          // Explicitly set the format to ensure month and day are correctly presented
           ws[cellRef].z = 'yyyy-mm-dd';
         }
       }
@@ -232,5 +254,87 @@ export const exportToExcel = (sheets: RosterSheet[], fileName: string) => {
 
     XLSX.utils.book_append_sheet(wb, ws, sheet.name);
   });
+  XLSX.writeFile(wb, fileName);
+};
+
+/**
+ * Exports a combined summary keeping only columns C to G (Date to Change).
+ * Sorts by Date > RAW in > RAW Out > Name.
+ */
+export const exportCombinedSummary = (sheets: RosterSheet[], fileName: string) => {
+  const combined: any[][] = [];
+  
+  // Collect all data from indices 2 to 6
+  sheets.forEach(sheet => {
+    sheet.data.forEach((row, idx) => {
+      if (idx === 0) return; // Skip headers
+      // Extract columns C (2) to G (6)
+      const subset = row.slice(2, 7);
+      if (subset.some(cell => cell !== null && cell !== undefined && cell !== "")) {
+        // 0. Date
+        const d = parseYMD(subset[0]);
+        if (d) subset[0] = d;
+
+        // 1. RAW in - Format to hh:mm
+        subset[1] = formatTimeValue(subset[1]);
+
+        // 2. RAW out - Format to hh:mm
+        subset[2] = formatTimeValue(subset[2]);
+
+        combined.push(subset);
+      }
+    });
+  });
+
+  // Sort by: Date (0) > RAW in (1) > RAW out (2) > Name (3)
+  combined.sort((a, b) => {
+    // 1. Date
+    const dA = a[0] instanceof Date ? a[0].getTime() : 0;
+    const dB = b[0] instanceof Date ? b[0].getTime() : 0;
+    if (dA !== dB) return dA - dB;
+
+    // 2. RAW in (Already formatted as hh:mm strings, standard string sort works)
+    const inA = String(a[1] || "");
+    const inB = String(b[1] || "");
+    const compIn = inA.localeCompare(inB);
+    if (compIn !== 0) return compIn;
+
+    // 3. RAW out
+    const outA = String(a[2] || "");
+    const outB = String(b[2] || "");
+    const compOut = outA.localeCompare(outB);
+    if (compOut !== 0) return compOut;
+
+    // 4. Name
+    const nameA = String(a[3] || "");
+    const nameB = String(b[3] || "");
+    return nameA.localeCompare(nameB);
+  });
+
+  // Add header row
+  const header = ['Date', 'RAW in', 'RAW out', 'Name', 'Change'];
+  const finalData = [header, ...combined];
+
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet(finalData, { cellDates: true });
+
+  // Format Date Column (0 in new sheet)
+  if (ws['!ref']) {
+    const range = XLSX.utils.decode_range(ws['!ref']);
+    for (let r = range.s.r + 1; r <= range.e.r; ++r) {
+      const cellRef = XLSX.utils.encode_cell({ r, c: 0 });
+      if (ws[cellRef] && ws[cellRef].t === 'd') {
+        ws[cellRef].z = 'yyyy-mm-dd';
+      }
+      
+      // Explicitly set columns 1 and 2 to text format just in case
+      const inCell = XLSX.utils.encode_cell({ r, c: 1 });
+      const outCell = XLSX.utils.encode_cell({ r, c: 2 });
+      if (ws[inCell]) ws[inCell].z = '@';
+      if (ws[outCell]) ws[outCell].z = '@';
+    }
+  }
+
+  XLSX.utils.book_append_sheet(wb, ws, 'Summary');
   XLSX.writeFile(wb, fileName);
 };
